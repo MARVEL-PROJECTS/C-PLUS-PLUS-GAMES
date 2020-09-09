@@ -1,175 +1,317 @@
 #include <SFML/Graphics.hpp>
+#include <time.h>
+#include <list>
 using namespace sf;
 
-int width = 1024;
-int height = 768;
-int roadW = 2000;
-int segL = 200; //segment length
-float camD = 0.84; //camera depth
+const int W = 1200;
+const int H = 800;
 
-void drawQuad(RenderWindow &w, Color c, int x1,int y1,int w1,int x2,int y2,int w2)
+float DEGTORAD = 0.017453f;
+
+class Animation
 {
-    ConvexShape shape(4);
-    shape.setFillColor(c);
-    shape.setPoint(0, Vector2f(x1-w1,y1));
-    shape.setPoint(1, Vector2f(x2-w2,y2));
-    shape.setPoint(2, Vector2f(x2+w2,y2));
-    shape.setPoint(3, Vector2f(x1+w1,y1));
-    w.draw(shape);
-}
+   public:
+   float Frame, speed;
+   Sprite sprite;
+   std::vector<IntRect> frames;
 
-struct Line
-{
-  float x,y,z; //3d center of line
-  float X,Y,W; //screen coord
-  float curve,spriteX,clip,scale;
-  Sprite sprite;
+   Animation(){}
 
-  Line()
-  {spriteX=curve=x=y=z=0;}
+   Animation (Texture &t, int x, int y, int w, int h, int count, float Speed)
+   {
+     Frame = 0;
+     speed = Speed;
 
-  void project(int camX,int camY,int camZ)
-  {
-    scale = camD/(z-camZ);
-    X = (1 + scale*(x - camX)) * width/2;
-    Y = (1 - scale*(y - camY)) * height/2;
-    W = scale * roadW  * width/2;
-  }
+     for (int i=0;i<count;i++)
+      frames.push_back( IntRect(x+i*w, y, w, h)  );
 
-  void drawSprite(RenderWindow &app)
-  {
-    Sprite s = sprite;
-    int w = s.getTextureRect().width;
-    int h = s.getTextureRect().height;
+     sprite.setTexture(t);
+     sprite.setOrigin(w/2,h/2);
+     sprite.setTextureRect(frames[0]);
+   }
 
-    float destX = X + scale * spriteX * width/2;
-    float destY = Y + 4;
-    float destW  = w * W / 266;
-    float destH  = h * W / 266;
 
-    destX += destW * spriteX; //offsetX
-    destY += destH * (-1);    //offsetY
+   void update()
+   {
+     Frame += speed;
+     int n = frames.size();
+     if (Frame >= n) Frame -= n;
+     if (n>0) sprite.setTextureRect( frames[int(Frame)] );
+   }
 
-    float clipH = destY+destH-clip;
-    if (clipH<0) clipH=0;
+   bool isEnd()
+   {
+     return Frame+speed>=frames.size();
+   }
 
-    if (clipH>=destH) return;
-    s.setTextureRect(IntRect(0,0,w,h-h*clipH/destH));
-    s.setScale(destW/w,destH/h);
-    s.setPosition(destX, destY);
-    app.draw(s);
-    }
 };
+
+
+class Entity
+{
+   public:
+   float x,y,dx,dy,R,angle;
+   bool life;
+   std::string name;
+   Animation anim;
+
+   Entity()
+   {
+     life=1;
+   }
+
+   void settings(Animation &a,int X,int Y,float Angle=0,int radius=1)
+   {
+     anim = a;
+     x=X; y=Y;
+     angle = Angle;
+     R = radius;
+   }
+
+   virtual void update(){};
+
+   void draw(RenderWindow &app)
+   {
+     anim.sprite.setPosition(x,y);
+     anim.sprite.setRotation(angle+90);
+     app.draw(anim.sprite);
+
+     CircleShape circle(R);
+     circle.setFillColor(Color(255,0,0,170));
+     circle.setPosition(x,y);
+     circle.setOrigin(R,R);
+     //app.draw(circle);
+   }
+
+   virtual ~Entity(){};
+};
+
+
+class asteroid: public Entity
+{
+   public:
+   asteroid()
+   {
+     dx=rand()%8-4;
+     dy=rand()%8-4;
+     name="asteroid";
+   }
+
+   void update()
+   {
+     x+=dx;
+     y+=dy;
+
+     if (x>W) x=0;  if (x<0) x=W;
+     if (y>H) y=0;  if (y<0) y=H;
+   }
+
+};
+
+
+class bullet: public Entity
+{
+   public:
+   bullet()
+   {
+     name="bullet";
+   }
+
+   void  update()
+   {
+     dx=cos(angle*DEGTORAD)*6;
+     dy=sin(angle*DEGTORAD)*6;
+     // angle+=rand()%7-3;  /*try this*/
+     x+=dx;
+     y+=dy;
+
+     if (x>W || x<0 || y>H || y<0) life=0;
+   }
+
+};
+
+
+class player: public Entity
+{
+   public:
+   bool thrust;
+
+   player()
+   {
+     name="player";
+   }
+
+   void update()
+   {
+     if (thrust)
+      { dx+=cos(angle*DEGTORAD)*0.2;
+        dy+=sin(angle*DEGTORAD)*0.2; }
+     else
+      { dx*=0.99;
+        dy*=0.99; }
+
+    int maxSpeed=15;
+    float speed = sqrt(dx*dx+dy*dy);
+    if (speed>maxSpeed)
+     { dx *= maxSpeed/speed;
+       dy *= maxSpeed/speed; }
+
+    x+=dx;
+    y+=dy;
+
+    if (x>W) x=0; if (x<0) x=W;
+    if (y>H) y=0; if (y<0) y=H;
+   }
+
+};
+
+
+bool isCollide(Entity *a,Entity *b)
+{
+  return (b->x - a->x)*(b->x - a->x)+
+         (b->y - a->y)*(b->y - a->y)<
+         (a->R + b->R)*(a->R + b->R);
+}
 
 
 int main()
 {
-    RenderWindow app(VideoMode(width, height), "Outrun Racing!");
+    srand(time(0));
+
+    RenderWindow app(VideoMode(W, H), "Asteroids!");
     app.setFramerateLimit(60);
 
-    Texture t[50];
-    Sprite object[50];
-    for(int i=1;i<=7;i++)
-     {
-       t[i].loadFromFile("images/"+std::to_string(i)+".png");
-       t[i].setSmooth(true);
-       object[i].setTexture(t[i]);
-     }
+    Texture t1,t2,t3,t4,t5,t6,t7;
+    t1.loadFromFile("images/spaceship.png");
+    t2.loadFromFile("images/background.jpg");
+    t3.loadFromFile("images/explosions/type_C.png");
+    t4.loadFromFile("images/rock.png");
+    t5.loadFromFile("images/fire_blue.png");
+    t6.loadFromFile("images/rock_small.png");
+    t7.loadFromFile("images/explosions/type_B.png");
 
-    Texture bg;
-    bg.loadFromFile("images/bg.png");
-    bg.setRepeated(true);
-    Sprite sBackground(bg);
-    sBackground.setTextureRect(IntRect(0,0,5000,411));
-    sBackground.setPosition(-2000,0);
+    t1.setSmooth(true);
+    t2.setSmooth(true);
 
-    std::vector<Line> lines;
+    Sprite background(t2);
 
-    for(int i=0;i<1600;i++)
-     {
-       Line line;
-       line.z = i*segL;
+    Animation sExplosion(t3, 0,0,256,256, 48, 0.5);
+    Animation sRock(t4, 0,0,64,64, 16, 0.2);
+    Animation sRock_small(t6, 0,0,64,64, 16, 0.2);
+    Animation sBullet(t5, 0,0,32,64, 16, 0.8);
+    Animation sPlayer(t1, 40,0,40,40, 1, 0);
+    Animation sPlayer_go(t1, 40,40,40,40, 1, 0);
+    Animation sExplosion_ship(t7, 0,0,192,192, 64, 0.5);
 
-       if (i>300 && i<700) line.curve=0.5;
-       if (i>1100) line.curve=-0.7;
 
-       if (i<300 && i%20==0) {line.spriteX=-2.5; line.sprite=object[5];}
-       if (i%17==0)          {line.spriteX=2.0; line.sprite=object[6];}
-       if (i>300 && i%20==0) {line.spriteX=-0.7; line.sprite=object[4];}
-       if (i>800 && i%20==0) {line.spriteX=-1.2; line.sprite=object[1];}
-       if (i==400)           {line.spriteX=-1.2; line.sprite=object[7];}
+    std::list<Entity*> entities;
 
-       if (i>750) line.y = sin(i/30.0)*1500;
+    for(int i=0;i<15;i++)
+    {
+      asteroid *a = new asteroid();
+      a->settings(sRock, rand()%W, rand()%H, rand()%360, 25);
+      entities.push_back(a);
+    }
 
-       lines.push_back(line);
-     }
+    player *p = new player();
+    p->settings(sPlayer,200,200,0,20);
+    entities.push_back(p);
 
-   int N = lines.size();
-   float playerX = 0;
-   int pos = 0;
-   int H = 1500;
-
+    /////main loop/////
     while (app.isOpen())
     {
-        Event e;
-        while (app.pollEvent(e))
+        Event event;
+        while (app.pollEvent(event))
         {
-            if (e.type == Event::Closed)
+            if (event.type == Event::Closed)
                 app.close();
+
+            if (event.type == Event::KeyPressed)
+             if (event.key.code == Keyboard::Space)
+              {
+                bullet *b = new bullet();
+                b->settings(sBullet,p->x,p->y,p->angle,10);
+                entities.push_back(b);
+              }
         }
 
-  int speed=0;
+    if (Keyboard::isKeyPressed(Keyboard::Right)) p->angle+=3;
+    if (Keyboard::isKeyPressed(Keyboard::Left))  p->angle-=3;
+    if (Keyboard::isKeyPressed(Keyboard::Up)) p->thrust=true;
+    else p->thrust=false;
 
-  if (Keyboard::isKeyPressed(Keyboard::Right)) playerX+=0.1;
-  if (Keyboard::isKeyPressed(Keyboard::Left)) playerX-=0.1;
-  if (Keyboard::isKeyPressed(Keyboard::Up)) speed=200;
-  if (Keyboard::isKeyPressed(Keyboard::Down)) speed=-200;
-  if (Keyboard::isKeyPressed(Keyboard::Tab)) speed*=3;
-  if (Keyboard::isKeyPressed(Keyboard::W)) H+=100;
-  if (Keyboard::isKeyPressed(Keyboard::S)) H-=100;
 
-  pos+=speed;
-  while (pos >= N*segL) pos-=N*segL;
-  while (pos < 0) pos += N*segL;
+    for(auto a:entities)
+     for(auto b:entities)
+     {
+      if (a->name=="asteroid" && b->name=="bullet")
+       if ( isCollide(a,b) )
+           {
+            a->life=false;
+            b->life=false;
 
-  app.clear(Color(105,205,4));
-  app.draw(sBackground);
-  int startPos = pos/segL;
-  int camH = lines[startPos].y + H;
-  if (speed>0) sBackground.move(-lines[startPos].curve*2,0);
-  if (speed<0) sBackground.move( lines[startPos].curve*2,0);
+            Entity *e = new Entity();
+            e->settings(sExplosion,a->x,a->y);
+            e->name="explosion";
+            entities.push_back(e);
 
-  int maxy = height;
-  float x=0,dx=0;
 
-  ///////draw road////////
-  for(int n = startPos; n<startPos+300; n++)  
-   {
-    Line &l = lines[n%N];
-    l.project(playerX*roadW-x, camH, startPos*segL - (n>=N?N*segL:0));
-    x+=dx;
-    dx+=l.curve;
+            for(int i=0;i<2;i++)
+            {
+             if (a->R==15) continue;
+             Entity *e = new asteroid();
+             e->settings(sRock_small,a->x,a->y,rand()%360,15);
+             entities.push_back(e);
+            }
 
-    l.clip=maxy;
-    if (l.Y>=maxy) continue;
-    maxy = l.Y;
+           }
 
-    Color grass  = (n/3)%2?Color(16,200,16):Color(0,154,0);
-    Color rumble = (n/3)%2?Color(255,255,255):Color(0,0,0);
-    Color road   = (n/3)%2?Color(107,107,107):Color(105,105,105);
+      if (a->name=="player" && b->name=="asteroid")
+       if ( isCollide(a,b) )
+           {
+            b->life=false;
 
-    Line p = lines[(n-1)%N]; //previous line
+            Entity *e = new Entity();
+            e->settings(sExplosion_ship,a->x,a->y);
+            e->name="explosion";
+            entities.push_back(e);
 
-    drawQuad(app, grass, 0, p.Y, width, 0, l.Y, width);
-    drawQuad(app, rumble,p.X, p.Y, p.W*1.2, l.X, l.Y, l.W*1.2);
-    drawQuad(app, road,  p.X, p.Y, p.W, l.X, l.Y, l.W);
-   }
+            p->settings(sPlayer,W/2,H/2,0,20);
+            p->dx=0; p->dy=0;
+           }
+     }
 
-    ////////draw objects////////
-    for(int n=startPos+300; n>startPos; n--)
-      lines[n%N].drawSprite(app);
 
-    app.display();
+    if (p->thrust)  p->anim = sPlayer_go;
+    else   p->anim = sPlayer;
+
+
+    for(auto e:entities)
+     if (e->name=="explosion")
+      if (e->anim.isEnd()) e->life=0;
+
+    if (rand()%150==0)
+     {
+       asteroid *a = new asteroid();
+       a->settings(sRock, 0,rand()%H, rand()%360, 25);
+       entities.push_back(a);
+     }
+
+    for(auto i=entities.begin();i!=entities.end();)
+    {
+      Entity *e = *i;
+
+      e->update();
+      e->anim.update();
+
+      if (e->life==false) {i=entities.erase(i); delete e;}
+      else i++;
+    }
+
+   //////draw//////
+   app.draw(background);
+   for(auto i:entities) i->draw(app);
+   app.display();
     }
 
     return 0;
